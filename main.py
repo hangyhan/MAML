@@ -48,7 +48,7 @@ flags.DEFINE_integer(
 flags.DEFINE_string('baseline', None, 'oracle, or None')
 
 
-# Training options
+# Meta Training options
 flags.DEFINE_integer('pretrain_iterations', 0,
                      'number of pre-training iterations.')
 # 15k for omniglot, 50k for sinusoid
@@ -57,6 +57,8 @@ flags.DEFINE_integer('metatrain_iterations', 15000,
 flags.DEFINE_integer('meta_batch_size', 25,
                      'number of tasks sampled per meta-update')
 flags.DEFINE_float('meta_lr', 0.001, 'the base learning rate of the generator')
+
+# Inner Training options
 flags.DEFINE_integer('update_batch_size', 5,
                      'number of examples used for inner gradient update (K for K-shot learning).')
 # 0.1 for omniglot
@@ -95,6 +97,11 @@ flags.DEFINE_float('train_update_lr', -1,
 
 
 def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
+    '''
+        Args:
+            model: the maml model created in main()
+            data_generator: the data_generator created in main()
+    '''
     SUMMARY_INTERVAL = 100
     SAVE_INTERVAL = 1000
     if FLAGS.datasource == 'sinusoid':
@@ -115,24 +122,30 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
 
     for itr in range(resume_itr, FLAGS.pretrain_iterations + FLAGS.metatrain_iterations):
         feed_dict = {}
+        # generate the right structure of data
         if 'generate' in dir(data_generator):
+            # amp, phase: two parameters of sinusoid functions
+            # one batch is corresponding to one sinsoid function
             batch_x, batch_y, amp, phase = data_generator.generate()
 
             if FLAGS.baseline == 'oracle':
+                # add amplitude and phase value to each datapoint x
+                # meta_batch_size refers to the number of different functions
                 batch_x = np.concatenate(
                     [batch_x, np.zeros([batch_x.shape[0], batch_x.shape[1], 2])], 2)
                 for i in range(FLAGS.meta_batch_size):
                     batch_x[i, :, 1] = amp[i]
                     batch_x[i, :, 2] = phase[i]
-
+            # The update_batch_size equals to the K in 'K-shot learning'
             inputa = batch_x[:, :num_classes * FLAGS.update_batch_size, :]
             labela = batch_y[:, :num_classes * FLAGS.update_batch_size, :]
-            inputb = batch_x[:, num_classes *
-                             FLAGS.update_batch_size:, :]  # b used for testing
+            # b used for meta-update
+            inputb = batch_x[:, num_classes * FLAGS.update_batch_size:, :]
             labelb = batch_y[:, num_classes * FLAGS.update_batch_size:, :]
             feed_dict = {model.inputa: inputa, model.inputb: inputb,
                          model.labela: labela, model.labelb: labelb}
 
+        # get the optimizer from connstruct_model()
         if itr < FLAGS.pretrain_iterations:
             input_tensors = [model.pretrain_op]
         else:
@@ -153,6 +166,7 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
                 train_writer.add_summary(result[1], itr)
             postlosses.append(result[-1])
 
+        # print the information of training process
         if (itr != 0) and itr % PRINT_INTERVAL == 0:
             if itr < FLAGS.pretrain_iterations:
                 print_str = 'Pretrain Iteration ' + str(itr)
@@ -284,6 +298,7 @@ def main():
         # always use meta batch size of 1 when testing.
         FLAGS.meta_batch_size = 1
 
+    # Create the task specific data generator
     if FLAGS.datasource == 'sinusoid':
         data_generator = DataGenerator(
             FLAGS.update_batch_size * 2, FLAGS.meta_batch_size)
@@ -309,6 +324,7 @@ def main():
                     FLAGS.update_batch_size * 2, FLAGS.meta_batch_size)
 
     dim_output = data_generator.dim_output
+
     if FLAGS.baseline == 'oracle':
         assert FLAGS.datasource == 'sinusoid'
         dim_input = 3
@@ -352,6 +368,7 @@ def main():
         tf_data_load = False
         input_tensors = None
 
+    # Create the MAML model
     model = MAML(dim_input, dim_output, test_num_updates=test_num_updates)
     if FLAGS.train or not tf_data_load:
         model.construct_model(input_tensors=input_tensors, prefix='metatrain_')

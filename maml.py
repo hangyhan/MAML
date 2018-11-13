@@ -26,6 +26,7 @@ class MAML:
         self.classification = False
         self.test_num_updates = test_num_updates
         if FLAGS.datasource == 'sinusoid':
+            # 2 hidden layers of size 40 with ReLU nonlinearities
             self.dim_hidden = [40, 40]
             self.loss_func = mse
             self.forward = self.forward_fc
@@ -50,7 +51,8 @@ class MAML:
             raise ValueError('Unrecognized data source.')
 
     def construct_model(self, input_tensors=None, prefix='metatrain_'):
-        # a: training data for inner gradient, b: test data for meta gradient
+        # a: training data for inner gradient, b: training data for meta
+        # gradient
         if input_tensors is None:
             self.inputa = tf.placeholder(tf.float32)
             self.inputb = tf.placeholder(tf.float32)
@@ -80,7 +82,16 @@ class MAML:
             accuraciesb = [[]] * num_updates
 
             def task_metalearn(inp, reuse=True):
-                """ Perform gradient descent for one task in the meta-batch. """
+                '''
+                    Perform gradient descent for one task in the meta-batch.
+
+                    Args: 
+                        inp: training data and test data for each task
+
+                    Returns:
+                        outputs = task_output = [task_outputa, task_outputbs, task_lossa, task_lossesb]
+                        outputs and losses on training inputs and test inputs
+                '''
                 inputa, inputb, labela, labelb = inp
                 task_outputbs, task_lossesb = [], []
 
@@ -137,6 +148,7 @@ class MAML:
                          tf.float32, [tf.float32] * num_updates]
             if self.classification:
                 out_dtype.extend([tf.float32, [tf.float32] * num_updates])
+
             result = tf.map_fn(task_metalearn, elems=(self.inputa, self.inputb, self.labela,
                                                       self.labelb), dtype=out_dtype, parallel_iterations=FLAGS.meta_batch_size)
             if self.classification:
@@ -146,6 +158,8 @@ class MAML:
 
         ## Performance & Optimization
         if 'train' in prefix:
+            # total_loss1 is the loss on training set before gradient descent for each task
+            # total_losses2 is the losses on test set during and after several gradient descent for each task
             self.total_loss1 = total_loss1 = tf.reduce_sum(
                 lossesa) / tf.to_float(FLAGS.meta_batch_size)
             self.total_losses2 = total_losses2 = [tf.reduce_sum(
@@ -157,6 +171,8 @@ class MAML:
                     accuraciesa) / tf.to_float(FLAGS.meta_batch_size)
                 self.total_accuracies2 = total_accuracies2 = [tf.reduce_sum(
                     accuraciesb[j]) / tf.to_float(FLAGS.meta_batch_size) for j in range(num_updates)]
+
+            # Use the loss on training set to update
             self.pretrain_op = tf.train.AdamOptimizer(
                 self.meta_lr).minimize(total_loss1)
 
@@ -167,6 +183,7 @@ class MAML:
                 if FLAGS.datasource == 'miniimagenet':
                     gvs = [(tf.clip_by_value(grad, -10, 10), var)
                            for grad, var in gvs]
+                # metatrain_op is for meta-update
                 self.metatrain_op = optimizer.apply_gradients(gvs)
         else:
             self.metaval_total_loss1 = total_loss1 = tf.reduce_sum(
@@ -209,6 +226,7 @@ class MAML:
         return weights
 
     def forward_fc(self, inp, weights, reuse=False):
+        # calculate the output of the fully connected layers
         hidden = normalize(tf.matmul(inp, weights[
                            'w1']) + weights['b1'], activation=tf.nn.relu, reuse=reuse, scope='0')
         for i in range(1, len(self.dim_hidden)):
